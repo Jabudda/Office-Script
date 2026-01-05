@@ -1,6 +1,8 @@
 /**
- * Call History - Visual Flair + Dashboard (No Formulas, No explicit any)
- * Matches provided headers exactly.
+ * Call History - Visual Flair + Dashboard
+ * - No formulas
+ * - No explicit any
+ * - Defensive guards for Excel tenant differences (freeze panes + data bars)
  */
 function main(workbook: ExcelScript.Workbook) {
   const srcSheet = workbook.getActiveWorksheet();
@@ -23,10 +25,15 @@ function main(workbook: ExcelScript.Workbook) {
   table.setName(tableName);
   table.setPredefinedTableStyle("TableStyleMedium9");
 
-  // Freeze header row
-  const fp = srcSheet.getFreezePanes();
-  fp.unfreeze();
-  fp.freezeRows(1);
+  // ---------- Freeze header row (defensive) ----------
+  // Some tenants/builds behave oddly with unfreeze(), so guard it.
+  try {
+    const fp = srcSheet.getFreezePanes();
+    try { fp.unfreeze(); } catch { /* ignore */ }
+    fp.freezeRows(1);
+  } catch {
+    // If freeze panes API is blocked/unavailable, continue without freezing.
+  }
 
   // Autofit
   used.getFormat().autofitColumns();
@@ -132,7 +139,6 @@ function main(workbook: ExcelScript.Workbook) {
     table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("0.00%");
   }
 
-  // Count/integer columns (match your headers)
   const intCols = [
     "Inbound",
     "Inbound Handled",
@@ -155,18 +161,25 @@ function main(workbook: ExcelScript.Workbook) {
   }
 
   // ---------- Conditional formatting ----------
-  // Highlight key “problem” counts
   applyGreaterThanZeroHighlight("Abandons");
   applyGreaterThanZeroHighlight("Prequeue Abandons");
 
-  // Percent columns: data bars
+  // Percent columns: data bars (defensive)
   for (const c of pctCols) {
     if (!hasColumn(c)) continue;
+
     const r = table.getColumnByName(c).getRangeBetweenHeaderAndTotal();
     const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.dataBar);
     const db = cf.getDataBar();
     db.setShowDataBarOnly(false);
-    db.getPositiveFormat().setGradientFill(true);
+
+    // Some builds throw if positive format isn't available
+    try {
+      const pf = db.getPositiveFormat();
+      try { pf.setGradientFill(true); } catch { /* ignore */ }
+    } catch {
+      // ignore – data bar still works without gradient
+    }
   }
 
   // ---------- Build Dashboard ----------
@@ -179,7 +192,6 @@ function main(workbook: ExcelScript.Workbook) {
   dash.getRange("A1").getFormat().getFont().setBold(true);
   dash.getRange("A1").getFormat().getFont().setSize(18);
 
-  // KPI Labels
   dash.getRange("A3:E3").setValues([[
     "Inbound (Total)",
     "Handled (Inbound)",
@@ -195,10 +207,9 @@ function main(workbook: ExcelScript.Workbook) {
   const inboundHandledVals = getColValues("Inbound Handled");
   const abandonsVals = getColValues("Abandons");
   const cbReqVals = getColValues("Callback Requests");
-  const ahtVals = getColValues("Avg Handle Time"); // time fraction of day
+  const ahtVals = getColValues("Avg Handle Time");
   const mediaVals = getColValues("Media Type Name");
 
-  // Identify "Grand Total" row (if present)
   const gtIdx = findRowIndexByExactText(dayCol, "Grand Total");
 
   function sumColumn(vals: (string | number | boolean)[][] | null, excludeIdx: number): number {
@@ -222,7 +233,6 @@ function main(workbook: ExcelScript.Workbook) {
   const abandonsTotal = valueOrSum(abandonsVals, gtIdx);
   const cbReqTotal = valueOrSum(cbReqVals, gtIdx);
 
-  // Weighted Avg Handle Time (exclude Grand Total to avoid double counting)
   let avgHandleTime = 0;
   if (ahtVals && inboundHandledVals) {
     let numerator = 0;
@@ -230,14 +240,13 @@ function main(workbook: ExcelScript.Workbook) {
     for (let i = 0; i < ahtVals.length; i++) {
       if (i === gtIdx) continue;
       const ht = toNum(ahtVals[i][0]);           // fraction of day
-      const h = toNum(inboundHandledVals[i][0]); // handled count
+      const h = toNum(inboundHandledVals[i][0]); // count
       numerator += ht * h;
       denom += h;
     }
     avgHandleTime = denom > 0 ? numerator / denom : 0;
   }
 
-  // Write KPI values
   dash.getRange("A4").setValue(inboundTotal);
   dash.getRange("B4").setValue(inboundHandledTotal);
   dash.getRange("C4").setValue(abandonsTotal);
@@ -245,14 +254,12 @@ function main(workbook: ExcelScript.Workbook) {
   dash.getRange("E4").setValue(avgHandleTime);
   dash.getRange("E4").setNumberFormatLocal("[h]:mm:ss");
 
-  // KPI tile style
   const kpiTile = dash.getRange("A3:E4");
   kpiTile.getFormat().getFill().setColor("#F3F4F6");
   kpiTile.getFormat().setHorizontalAlignment(ExcelScript.HorizontalAlignment.center);
   kpiTile.getFormat().setVerticalAlignment(ExcelScript.VerticalAlignment.center);
   kpiTile.getFormat().setRowHeight(24);
 
-  // Media Type Summary Table
   dash.getRange("A6").setValue("By Media Type (excluding Grand Total)");
   dash.getRange("A6").getFormat().getFont().setBold(true);
 
@@ -297,19 +304,28 @@ function main(workbook: ExcelScript.Workbook) {
 
   const colChart = dash.addChart(ExcelScript.ChartType.columnClustered, chartDataRange);
   colChart.setPosition(dash.getRange("E7"), dash.getRange("L20"));
-  const ct = colChart.getTitle();
-  ct.setVisible(true);
-  ct.setText("Inbound vs Inbound Handled by Media Type");
+
+  try {
+    const ct = colChart.getTitle();
+    ct.setVisible(true);
+    ct.setText("Inbound vs Inbound Handled by Media Type");
+  } catch {
+    // ignore title issues in some builds
+  }
   colChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.bottom);
 
   const pieChart = dash.addChart(ExcelScript.ChartType.pie, pieRange);
   pieChart.setPosition(dash.getRange("A22"), dash.getRange("D35"));
-  const pt = pieChart.getTitle();
-  pt.setVisible(true);
-  pt.setText("Inbound Share by Media Type");
+
+  try {
+    const pt = pieChart.getTitle();
+    pt.setVisible(true);
+    pt.setText("Inbound Share by Media Type");
+  } catch {
+    // ignore title issues in some builds
+  }
   pieChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.right);
 
-  // Final polish
   dash.getUsedRange()?.getFormat().autofitColumns();
   dash.getUsedRange()?.getFormat().autofitRows();
 }
