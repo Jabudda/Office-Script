@@ -1,8 +1,6 @@
 /**
  * Call History - Visual Flair + Dashboard (No Formulas, No explicit any)
- * - Styles report as a table
- * - Applies formatting + conditional formatting
- * - Builds a KPI + charts dashboard using values computed in TypeScript (no Excel formulas)
+ * Matches provided headers exactly.
  */
 function main(workbook: ExcelScript.Workbook) {
   const srcSheet = workbook.getActiveWorksheet();
@@ -14,7 +12,6 @@ function main(workbook: ExcelScript.Workbook) {
   // ---------- Create / refresh table ----------
   const tableName = "CallHistory";
 
-  // Delete existing table by name if it exists
   for (const t of workbook.getTables()) {
     if (t.getName() === tableName) {
       t.delete();
@@ -93,13 +90,32 @@ function main(workbook: ExcelScript.Workbook) {
     return -1;
   }
 
-  // ---------- Apply column formats ----------
+  function applyGreaterThanZeroHighlight(colName: string): void {
+    if (!hasColumn(colName)) return;
+    const r = table.getColumnByName(colName).getRangeBetweenHeaderAndTotal();
+    const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.cellValue);
+    cf.getCellValue().setRule({
+      formula1: "0",
+      operator: ExcelScript.ConditionalCellValueOperator.greaterThan
+    });
+    const fmt = cf.getCellValue().getFormat();
+    fmt.getFill().setColor("#FDE2E2");
+    fmt.getFont().setColor("#9B1C1C");
+    fmt.getFont().setBold(true);
+  }
+
+  // ---------- Apply column formats (match your headers) ----------
   const timeCols = [
     "Avg Handle Time",
     "Avg InQueue Time",
     "Avg Abandon Time",
-    "Avg Callback Time",
-    "Avg Hold Time",
+    "Avg Speed Of Answer",
+    "Avg Inbound Time",
+    "Avg Active Talk Time",
+    "Avg Outbound Time",
+    "Outbound Active Talk Time",
+    "Active Talk Time",
+    "Abandon Time",
     "Long Abandon Time",
     "Avg Short Abandon Time",
     "Held Party Abandon Time"
@@ -116,6 +132,7 @@ function main(workbook: ExcelScript.Workbook) {
     table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("0.00%");
   }
 
+  // Count/integer columns (match your headers)
   const intCols = [
     "Inbound",
     "Inbound Handled",
@@ -126,30 +143,21 @@ function main(workbook: ExcelScript.Workbook) {
     "Held",
     "Long Abandons",
     "Incoming",
-    "Outgoing",
-    "Handled",
+    "Outbound",
+    "Prequeue Abandons",
     "Short Abandons",
     "Agent Contacts"
   ];
+
   for (const c of intCols) {
     if (!hasColumn(c)) continue;
     table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("0");
   }
 
   // ---------- Conditional formatting ----------
-  // Abandons: highlight >0
-  if (hasColumn("Abandons")) {
-    const r = table.getColumnByName("Abandons").getRangeBetweenHeaderAndTotal();
-    const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.cellValue);
-    cf.getCellValue().setRule({
-      formula1: "0",
-      operator: ExcelScript.ConditionalCellValueOperator.greaterThan
-    });
-    const fmt = cf.getCellValue().getFormat();
-    fmt.getFill().setColor("#FDE2E2");
-    fmt.getFont().setColor("#9B1C1C");
-    fmt.getFont().setBold(true);
-  }
+  // Highlight key “problem” counts
+  applyGreaterThanZeroHighlight("Abandons");
+  applyGreaterThanZeroHighlight("Prequeue Abandons");
 
   // Percent columns: data bars
   for (const c of pctCols) {
@@ -167,7 +175,6 @@ function main(workbook: ExcelScript.Workbook) {
   if (dash) dash.delete();
   dash = workbook.addWorksheet(dashName);
 
-  // Title
   dash.getRange("A1").setValue("LBO Call History Dashboard");
   dash.getRange("A1").getFormat().getFont().setBold(true);
   dash.getRange("A1").getFormat().getFont().setSize(18);
@@ -182,15 +189,16 @@ function main(workbook: ExcelScript.Workbook) {
   ]]);
   dash.getRange("A3:E3").getFormat().getFont().setBold(true);
 
-  // Read needed columns
+  // Read columns
   const dayCol = getColValues("Day of Week");
   const inboundVals = getColValues("Inbound");
   const inboundHandledVals = getColValues("Inbound Handled");
   const abandonsVals = getColValues("Abandons");
   const cbReqVals = getColValues("Callback Requests");
-  const ahtVals = getColValues("Avg Handle Time"); // Excel time as fraction of day
+  const ahtVals = getColValues("Avg Handle Time"); // time fraction of day
   const mediaVals = getColValues("Media Type Name");
 
+  // Identify "Grand Total" row (if present)
   const gtIdx = findRowIndexByExactText(dayCol, "Grand Total");
 
   function sumColumn(vals: (string | number | boolean)[][] | null, excludeIdx: number): number {
@@ -273,7 +281,7 @@ function main(workbook: ExcelScript.Workbook) {
 
   const rows: (string | number)[][] = Array.from(mediaMap.entries())
     .map(([k, v]) => [k, v.inbound, v.handled])
-    .sort((a, b) => (Number(b[1]) - Number(a[1])));
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
 
   if (rows.length === 0) {
     dash.getRange("A8").setValue("No Media Type rows found (check column names).");
@@ -284,14 +292,11 @@ function main(workbook: ExcelScript.Workbook) {
 
   // ---------- Charts ----------
   const dataRowCount = Math.max(rows.length, 1);
-
-  // Includes header row + data rows
   const chartDataRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 3); // A7:C...
   const pieRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 2);       // A7:B...
 
   const colChart = dash.addChart(ExcelScript.ChartType.columnClustered, chartDataRange);
   colChart.setPosition(dash.getRange("E7"), dash.getRange("L20"));
-
   const ct = colChart.getTitle();
   ct.setVisible(true);
   ct.setText("Inbound vs Inbound Handled by Media Type");
@@ -299,7 +304,6 @@ function main(workbook: ExcelScript.Workbook) {
 
   const pieChart = dash.addChart(ExcelScript.ChartType.pie, pieRange);
   pieChart.setPosition(dash.getRange("A22"), dash.getRange("D35"));
-
   const pt = pieChart.getTitle();
   pt.setVisible(true);
   pt.setText("Inbound Share by Media Type");
