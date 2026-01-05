@@ -2,8 +2,8 @@
  * Call History - Visual Flair + Dashboard
  * - No formulas
  * - No explicit any
- * - Hardened: handles getColumnByName returning undefined
- * - Matches your headers exactly
+ * - Hardened column lookup
+ * - GUARANTEES visible charts by writing chart data into a fixed block and positioning charts near it
  */
 function main(workbook: ExcelScript.Workbook) {
   const srcSheet = workbook.getActiveWorksheet();
@@ -26,14 +26,12 @@ function main(workbook: ExcelScript.Workbook) {
   table.setName(tableName);
   table.setPredefinedTableStyle("TableStyleMedium9");
 
-  // ---------- Freeze header row (defensive) ----------
+  // Freeze header row (defensive)
   try {
     const fp = srcSheet.getFreezePanes();
     try { fp.unfreeze(); } catch { /* ignore */ }
     fp.freezeRows(1);
-  } catch {
-    // If freeze panes is unavailable, continue.
-  }
+  } catch { /* ignore */ }
 
   // Autofit
   used.getFormat().autofitColumns();
@@ -49,7 +47,6 @@ function main(workbook: ExcelScript.Workbook) {
   function getColumnSafe(colName: string): ExcelScript.TableColumn | null {
     try {
       const col = table.getColumnByName(colName);
-      // Some tenants return undefined instead of throwing
       return col ? col : null;
     } catch {
       return null;
@@ -66,14 +63,20 @@ function main(workbook: ExcelScript.Workbook) {
     }
   }
 
+  function setNumberFormatIfExists(colName: string, format: string): void {
+    const col = getColumnSafe(colName);
+    if (!col) return;
+    col.getRangeBetweenHeaderAndTotal().setNumberFormatLocal(format);
+  }
+
   function toNum(x: unknown): number {
     if (x === null || x === undefined) return 0;
     if (typeof x === "number") return x;
     if (typeof x === "boolean") return x ? 1 : 0;
     if (typeof x === "string") {
-      const trimmed = x.trim();
-      if (trimmed === "") return 0;
-      const n = Number(trimmed);
+      const t = x.trim();
+      if (t === "") return 0;
+      const n = Number(t);
       return Number.isFinite(n) ? n : 0;
     }
     return 0;
@@ -116,13 +119,7 @@ function main(workbook: ExcelScript.Workbook) {
     fmt.getFont().setBold(true);
   }
 
-  function setNumberFormatIfExists(colName: string, format: string): void {
-    const col = getColumnSafe(colName);
-    if (!col) return;
-    col.getRangeBetweenHeaderAndTotal().setNumberFormatLocal(format);
-  }
-
-  // ---------- Apply column formats (match your headers) ----------
+  // ---------- Formats ----------
   const timeCols = [
     "Avg Handle Time",
     "Avg InQueue Time",
@@ -138,7 +135,6 @@ function main(workbook: ExcelScript.Workbook) {
     "Avg Short Abandon Time",
     "Held Party Abandon Time"
   ];
-
   for (const c of timeCols) setNumberFormatIfExists(c, "[h]:mm:ss");
 
   const pctCols = ["% PreQueue Time", "% Short Abandons", "% PostQueue Time"];
@@ -159,52 +155,66 @@ function main(workbook: ExcelScript.Workbook) {
     "Short Abandons",
     "Agent Contacts"
   ];
-
   for (const c of intCols) setNumberFormatIfExists(c, "0");
 
-  // ---------- Conditional formatting ----------
   applyGreaterThanZeroHighlight("Abandons");
   applyGreaterThanZeroHighlight("Prequeue Abandons");
 
-  // Percent columns: data bars (defensive)
   for (const c of pctCols) {
     const col = getColumnSafe(c);
     if (!col) continue;
-
     const r = col.getRangeBetweenHeaderAndTotal();
     const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.dataBar);
     const db = cf.getDataBar();
     db.setShowDataBarOnly(false);
-
-    // Some builds throw if positive format isn't available
     try {
       const pf = db.getPositiveFormat();
       try { pf.setGradientFill(true); } catch { /* ignore */ }
-    } catch {
-      // ignore – data bar still works without gradient
-    }
+    } catch { /* ignore */ }
   }
 
-  // ---------- Build Dashboard ----------
+  // ---------- Dashboard ----------
   const dashName = "Dashboard";
   let dash = workbook.getWorksheet(dashName);
   if (dash) dash.delete();
   dash = workbook.addWorksheet(dashName);
 
-  dash.getRange("A1").setValue("LBO Call History Dashboard");
-  dash.getRange("A1").getFormat().getFont().setBold(true);
-  dash.getRange("A1").getFormat().getFont().setSize(18);
+  // Make sure columns are wide enough so charts aren't "off canvas"
+  dash.getRange("A:A").getFormat().setColumnWidth(180);
+  dash.getRange("B:B").getFormat().setColumnWidth(140);
+  dash.getRange("C:C").getFormat().setColumnWidth(160);
+  dash.getRange("D:D").getFormat().setColumnWidth(170);
+  dash.getRange("E:E").getFormat().setColumnWidth(170);
+  dash.getRange("F:F").getFormat().setColumnWidth(24);
+  dash.getRange("G:G").getFormat().setColumnWidth(140);
+  dash.getRange("H:H").getFormat().setColumnWidth(140);
+  dash.getRange("I:I").getFormat().setColumnWidth(140);
+  dash.getRange("J:J").getFormat().setColumnWidth(140);
+  dash.getRange("K:K").getFormat().setColumnWidth(140);
+  dash.getRange("L:L").getFormat().setColumnWidth(140);
+  dash.getRange("M:M").getFormat().setColumnWidth(140);
 
-  dash.getRange("A3:E3").setValues([[
+  // Header band
+  const headerBand = dash.getRange("A1:M2");
+  headerBand.merge(true);
+  headerBand.setValue("LBO Call History Dashboard");
+  headerBand.getFormat().getFont().setBold(true);
+  headerBand.getFormat().getFont().setSize(18);
+  headerBand.getFormat().getFill().setColor("#111827");
+  headerBand.getFormat().getFont().setColor("#FFFFFF");
+  headerBand.getFormat().setHorizontalAlignment(ExcelScript.HorizontalAlignment.left);
+  headerBand.getFormat().setVerticalAlignment(ExcelScript.VerticalAlignment.center);
+
+  // KPI labels + values
+  dash.getRange("A4:E4").setValues([[
     "Inbound (Total)",
     "Handled (Inbound)",
     "Abandons",
     "Callback Requests",
     "Avg Handle Time"
   ]]);
-  dash.getRange("A3:E3").getFormat().getFont().setBold(true);
+  dash.getRange("A4:E4").getFormat().getFont().setBold(true);
 
-  // Read columns
   const dayCol = getColValues("Day of Week");
   const inboundVals = getColValues("Inbound");
   const inboundHandledVals = getColValues("Inbound Handled");
@@ -236,39 +246,44 @@ function main(workbook: ExcelScript.Workbook) {
   const abandonsTotal = valueOrSum(abandonsVals, gtIdx);
   const cbReqTotal = valueOrSum(cbReqVals, gtIdx);
 
-  // Weighted Avg Handle Time (exclude Grand Total row to avoid double-counting)
   let avgHandleTime = 0;
   if (ahtVals && inboundHandledVals) {
     let numerator = 0;
     let denom = 0;
     for (let i = 0; i < ahtVals.length; i++) {
       if (i === gtIdx) continue;
-      const ht = toNum(ahtVals[i][0]);           // fraction of day
-      const h = toNum(inboundHandledVals[i][0]); // count
+      const ht = toNum(ahtVals[i][0]);
+      const h = toNum(inboundHandledVals[i][0]);
       numerator += ht * h;
       denom += h;
     }
     avgHandleTime = denom > 0 ? numerator / denom : 0;
   }
 
-  dash.getRange("A4").setValue(inboundTotal);
-  dash.getRange("B4").setValue(inboundHandledTotal);
-  dash.getRange("C4").setValue(abandonsTotal);
-  dash.getRange("D4").setValue(cbReqTotal);
-  dash.getRange("E4").setValue(avgHandleTime);
-  dash.getRange("E4").setNumberFormatLocal("[h]:mm:ss");
+  dash.getRange("A5").setValue(inboundTotal);
+  dash.getRange("B5").setValue(inboundHandledTotal);
+  dash.getRange("C5").setValue(abandonsTotal);
+  dash.getRange("D5").setValue(cbReqTotal);
+  dash.getRange("E5").setValue(avgHandleTime);
+  dash.getRange("E5").setNumberFormatLocal("[h]:mm:ss");
 
-  const kpiTile = dash.getRange("A3:E4");
+  // KPI tile style
+  const kpiTile = dash.getRange("A4:E5");
   kpiTile.getFormat().getFill().setColor("#F3F4F6");
   kpiTile.getFormat().setHorizontalAlignment(ExcelScript.HorizontalAlignment.center);
   kpiTile.getFormat().setVerticalAlignment(ExcelScript.VerticalAlignment.center);
-  kpiTile.getFormat().setRowHeight(24);
+  kpiTile.getFormat().setRowHeight(26);
+  kpiTile.getFormat().getBorders().getItem(ExcelScript.BorderIndex.edgeBottom).setStyle(ExcelScript.BorderLineStyle.thin);
+  kpiTile.getFormat().getBorders().getItem(ExcelScript.BorderIndex.edgeTop).setStyle(ExcelScript.BorderLineStyle.thin);
+  kpiTile.getFormat().getBorders().getItem(ExcelScript.BorderIndex.edgeLeft).setStyle(ExcelScript.BorderLineStyle.thin);
+  kpiTile.getFormat().getBorders().getItem(ExcelScript.BorderIndex.edgeRight).setStyle(ExcelScript.BorderLineStyle.thin);
 
-  dash.getRange("A6").setValue("By Media Type (excluding Grand Total)");
-  dash.getRange("A6").getFormat().getFont().setBold(true);
+  // ---------- Media Type Summary (write into a fixed block) ----------
+  dash.getRange("A7").setValue("By Media Type");
+  dash.getRange("A7").getFormat().getFont().setBold(true);
 
-  dash.getRange("A7:C7").setValues([["Media Type Name", "Inbound", "Inbound Handled"]]);
-  dash.getRange("A7:C7").getFormat().getFont().setBold(true);
+  dash.getRange("A8:C8").setValues([["Media Type Name", "Inbound", "Inbound Handled"]]);
+  dash.getRange("A8:C8").getFormat().getFont().setBold(true);
 
   type MediaAgg = { inbound: number; handled: number };
   const mediaMap = new Map<string, MediaAgg>();
@@ -276,7 +291,6 @@ function main(workbook: ExcelScript.Workbook) {
   if (mediaVals) {
     for (let i = 0; i < mediaVals.length; i++) {
       if (i === gtIdx) continue;
-
       const media = toStr(mediaVals[i][0]).trim();
       if (!media) continue;
 
@@ -294,36 +308,46 @@ function main(workbook: ExcelScript.Workbook) {
     .map(([k, v]) => [k, v.inbound, v.handled])
     .sort((a, b) => Number(b[1]) - Number(a[1]));
 
-  if (rows.length === 0) {
-    dash.getRange("A8").setValue("No Media Type rows found (check column names).");
+  // Clear a fixed area first so old values don't linger
+  dash.getRange("A9:C40").clear(ExcelScript.ClearApplyTo.contents);
+
+  const maxRows = Math.min(rows.length, 32); // keep dashboard tidy
+  if (maxRows === 0) {
+    dash.getRange("A9").setValue("No Media Type rows found.");
   } else {
-    dash.getRangeByIndexes(7, 0, rows.length, 3).setValues(rows);
-    dash.getRangeByIndexes(7, 1, rows.length, 2).setNumberFormatLocal("0");
+    dash.getRangeByIndexes(8, 0, maxRows, 3).setValues(rows.slice(0, maxRows));
+    dash.getRangeByIndexes(8, 1, maxRows, 2).setNumberFormatLocal("0");
   }
 
-  // ---------- Charts ----------
-  const dataRowCount = Math.max(rows.length, 1);
-  const chartDataRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 3); // A7:C...
-  const pieRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 2);       // A7:B...
+  // ---------- Charts (anchored to visible area) ----------
+  // chart ranges must include header row + at least one data row
+  const dataRowCount = Math.max(maxRows, 1);
+  const chartDataRange = dash.getRangeByIndexes(7, 0, dataRowCount + 1, 3); // A8:C...
+  const pieRange = dash.getRangeByIndexes(7, 0, dataRowCount + 1, 2);       // A8:B...
+
+  // Remove existing charts if script is re-run (best effort)
+  try {
+    for (const ch of dash.getCharts()) ch.delete();
+  } catch { /* ignore */ }
 
   const colChart = dash.addChart(ExcelScript.ChartType.columnClustered, chartDataRange);
-  colChart.setPosition(dash.getRange("E7"), dash.getRange("L20"));
+  colChart.setPosition(dash.getRange("E8"), dash.getRange("M22"));
   try {
-    const ct = colChart.getTitle();
-    ct.setVisible(true);
-    ct.setText("Inbound vs Inbound Handled by Media Type");
+    const t = colChart.getTitle();
+    t.setVisible(true);
+    t.setText("Inbound vs Inbound Handled by Media Type");
   } catch { /* ignore */ }
   colChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.bottom);
 
   const pieChart = dash.addChart(ExcelScript.ChartType.pie, pieRange);
-  pieChart.setPosition(dash.getRange("A22"), dash.getRange("D35"));
+  pieChart.setPosition(dash.getRange("E24"), dash.getRange("M40"));
   try {
-    const pt = pieChart.getTitle();
-    pt.setVisible(true);
-    pt.setText("Inbound Share by Media Type");
+    const t = pieChart.getTitle();
+    t.setVisible(true);
+    t.setText("Inbound Share by Media Type");
   } catch { /* ignore */ }
   pieChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.right);
 
-  dash.getUsedRange()?.getFormat().autofitColumns();
+  // Final polish
   dash.getUsedRange()?.getFormat().autofitRows();
 }
