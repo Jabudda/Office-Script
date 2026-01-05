@@ -2,7 +2,8 @@
  * Call History - Visual Flair + Dashboard
  * - No formulas
  * - No explicit any
- * - Defensive guards for Excel tenant differences (freeze panes + data bars)
+ * - Hardened: handles getColumnByName returning undefined
+ * - Matches your headers exactly
  */
 function main(workbook: ExcelScript.Workbook) {
   const srcSheet = workbook.getActiveWorksheet();
@@ -26,13 +27,12 @@ function main(workbook: ExcelScript.Workbook) {
   table.setPredefinedTableStyle("TableStyleMedium9");
 
   // ---------- Freeze header row (defensive) ----------
-  // Some tenants/builds behave oddly with unfreeze(), so guard it.
   try {
     const fp = srcSheet.getFreezePanes();
     try { fp.unfreeze(); } catch { /* ignore */ }
     fp.freezeRows(1);
   } catch {
-    // If freeze panes API is blocked/unavailable, continue without freezing.
+    // If freeze panes is unavailable, continue.
   }
 
   // Autofit
@@ -46,18 +46,21 @@ function main(workbook: ExcelScript.Workbook) {
   headerRange.getFormat().setWrapText(true);
 
   // ---------- Helpers ----------
-  function hasColumn(colName: string): boolean {
+  function getColumnSafe(colName: string): ExcelScript.TableColumn | null {
     try {
-      table.getColumnByName(colName);
-      return true;
+      const col = table.getColumnByName(colName);
+      // Some tenants return undefined instead of throwing
+      return col ? col : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
   function getColValues(colName: string): (string | number | boolean)[][] | null {
+    const col = getColumnSafe(colName);
+    if (!col) return null;
     try {
-      return table.getColumnByName(colName).getRangeBetweenHeaderAndTotal().getValues();
+      return col.getRangeBetweenHeaderAndTotal().getValues();
     } catch {
       return null;
     }
@@ -98,8 +101,10 @@ function main(workbook: ExcelScript.Workbook) {
   }
 
   function applyGreaterThanZeroHighlight(colName: string): void {
-    if (!hasColumn(colName)) return;
-    const r = table.getColumnByName(colName).getRangeBetweenHeaderAndTotal();
+    const col = getColumnSafe(colName);
+    if (!col) return;
+
+    const r = col.getRangeBetweenHeaderAndTotal();
     const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.cellValue);
     cf.getCellValue().setRule({
       formula1: "0",
@@ -109,6 +114,12 @@ function main(workbook: ExcelScript.Workbook) {
     fmt.getFill().setColor("#FDE2E2");
     fmt.getFont().setColor("#9B1C1C");
     fmt.getFont().setBold(true);
+  }
+
+  function setNumberFormatIfExists(colName: string, format: string): void {
+    const col = getColumnSafe(colName);
+    if (!col) return;
+    col.getRangeBetweenHeaderAndTotal().setNumberFormatLocal(format);
   }
 
   // ---------- Apply column formats (match your headers) ----------
@@ -128,16 +139,10 @@ function main(workbook: ExcelScript.Workbook) {
     "Held Party Abandon Time"
   ];
 
-  for (const c of timeCols) {
-    if (!hasColumn(c)) continue;
-    table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("[h]:mm:ss");
-  }
+  for (const c of timeCols) setNumberFormatIfExists(c, "[h]:mm:ss");
 
   const pctCols = ["% PreQueue Time", "% Short Abandons", "% PostQueue Time"];
-  for (const c of pctCols) {
-    if (!hasColumn(c)) continue;
-    table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("0.00%");
-  }
+  for (const c of pctCols) setNumberFormatIfExists(c, "0.00%");
 
   const intCols = [
     "Inbound",
@@ -155,10 +160,7 @@ function main(workbook: ExcelScript.Workbook) {
     "Agent Contacts"
   ];
 
-  for (const c of intCols) {
-    if (!hasColumn(c)) continue;
-    table.getColumnByName(c).getRangeBetweenHeaderAndTotal().setNumberFormatLocal("0");
-  }
+  for (const c of intCols) setNumberFormatIfExists(c, "0");
 
   // ---------- Conditional formatting ----------
   applyGreaterThanZeroHighlight("Abandons");
@@ -166,9 +168,10 @@ function main(workbook: ExcelScript.Workbook) {
 
   // Percent columns: data bars (defensive)
   for (const c of pctCols) {
-    if (!hasColumn(c)) continue;
+    const col = getColumnSafe(c);
+    if (!col) continue;
 
-    const r = table.getColumnByName(c).getRangeBetweenHeaderAndTotal();
+    const r = col.getRangeBetweenHeaderAndTotal();
     const cf = r.addConditionalFormat(ExcelScript.ConditionalFormatType.dataBar);
     const db = cf.getDataBar();
     db.setShowDataBarOnly(false);
@@ -233,6 +236,7 @@ function main(workbook: ExcelScript.Workbook) {
   const abandonsTotal = valueOrSum(abandonsVals, gtIdx);
   const cbReqTotal = valueOrSum(cbReqVals, gtIdx);
 
+  // Weighted Avg Handle Time (exclude Grand Total row to avoid double-counting)
   let avgHandleTime = 0;
   if (ahtVals && inboundHandledVals) {
     let numerator = 0;
@@ -304,26 +308,20 @@ function main(workbook: ExcelScript.Workbook) {
 
   const colChart = dash.addChart(ExcelScript.ChartType.columnClustered, chartDataRange);
   colChart.setPosition(dash.getRange("E7"), dash.getRange("L20"));
-
   try {
     const ct = colChart.getTitle();
     ct.setVisible(true);
     ct.setText("Inbound vs Inbound Handled by Media Type");
-  } catch {
-    // ignore title issues in some builds
-  }
+  } catch { /* ignore */ }
   colChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.bottom);
 
   const pieChart = dash.addChart(ExcelScript.ChartType.pie, pieRange);
   pieChart.setPosition(dash.getRange("A22"), dash.getRange("D35"));
-
   try {
     const pt = pieChart.getTitle();
     pt.setVisible(true);
     pt.setText("Inbound Share by Media Type");
-  } catch {
-    // ignore title issues in some builds
-  }
+  } catch { /* ignore */ }
   pieChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.right);
 
   dash.getUsedRange()?.getFormat().autofitColumns();
