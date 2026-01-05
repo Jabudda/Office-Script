@@ -1,5 +1,5 @@
-/**Calls
- * Call History - Visual Flair + Dashboard (No Formulas Version)
+/**
+ * Call History - Visual Flair + Dashboard (No Formulas, No explicit any)
  * - Styles report as a table
  * - Applies formatting + conditional formatting
  * - Builds a KPI + charts dashboard using values computed in TypeScript (no Excel formulas)
@@ -26,7 +26,7 @@ function main(workbook: ExcelScript.Workbook) {
   table.setName(tableName);
   table.setPredefinedTableStyle("TableStyleMedium9");
 
-  // Freeze header row (fix for freeze panes API)
+  // Freeze header row
   const fp = srcSheet.getFreezePanes();
   fp.unfreeze();
   fp.freezeRows(1);
@@ -51,7 +51,7 @@ function main(workbook: ExcelScript.Workbook) {
     }
   }
 
-  function getColValues(colName: string): any[][] | null {
+  function getColValues(colName: string): (string | number | boolean)[][] | null {
     try {
       return table.getColumnByName(colName).getRangeBetweenHeaderAndTotal().getValues();
     } catch {
@@ -59,18 +59,35 @@ function main(workbook: ExcelScript.Workbook) {
     }
   }
 
-  function toNum(x: any): number {
-    if (x === null || x === undefined || x === "") return 0;
+  function toNum(x: unknown): number {
+    if (x === null || x === undefined) return 0;
     if (typeof x === "number") return x;
-    const n = Number(x);
-    return isNaN(n) ? 0 : n;
+    if (typeof x === "boolean") return x ? 1 : 0;
+    if (typeof x === "string") {
+      const trimmed = x.trim();
+      if (trimmed === "") return 0;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
   }
 
-  function findRowIndexByExactText(colValues: any[][] | null, needle: string): number {
+  function toStr(x: unknown): string {
+    if (x === null || x === undefined) return "";
+    if (typeof x === "string") return x;
+    if (typeof x === "number") return String(x);
+    if (typeof x === "boolean") return x ? "TRUE" : "FALSE";
+    return "";
+  }
+
+  function findRowIndexByExactText(
+    colValues: (string | number | boolean)[][] | null,
+    needle: string
+  ): number {
     if (!colValues) return -1;
     const target = needle.trim().toLowerCase();
     for (let i = 0; i < colValues.length; i++) {
-      const v = String(colValues[i][0] ?? "").trim().toLowerCase();
+      const v = toStr(colValues[i][0]).trim().toLowerCase();
       if (v === target) return i;
     }
     return -1;
@@ -165,8 +182,8 @@ function main(workbook: ExcelScript.Workbook) {
   ]]);
   dash.getRange("A3:E3").getFormat().getFont().setBold(true);
 
-  // Read needed columns (safe)
-  const dayCol = getColValues("Day of Week"); // used to detect Grand Total row
+  // Read needed columns
+  const dayCol = getColValues("Day of Week");
   const inboundVals = getColValues("Inbound");
   const inboundHandledVals = getColValues("Inbound Handled");
   const abandonsVals = getColValues("Abandons");
@@ -176,7 +193,7 @@ function main(workbook: ExcelScript.Workbook) {
 
   const gtIdx = findRowIndexByExactText(dayCol, "Grand Total");
 
-  function sumColumn(vals: any[][] | null, excludeIdx: number): number {
+  function sumColumn(vals: (string | number | boolean)[][] | null, excludeIdx: number): number {
     if (!vals) return 0;
     let s = 0;
     for (let i = 0; i < vals.length; i++) {
@@ -186,7 +203,7 @@ function main(workbook: ExcelScript.Workbook) {
     return s;
   }
 
-  function valueOrSum(vals: any[][] | null, preferredIndex: number): number {
+  function valueOrSum(vals: (string | number | boolean)[][] | null, preferredIndex: number): number {
     if (!vals) return 0;
     if (preferredIndex >= 0 && preferredIndex < vals.length) return toNum(vals[preferredIndex][0]);
     return sumColumn(vals, -1);
@@ -204,8 +221,8 @@ function main(workbook: ExcelScript.Workbook) {
     let denom = 0;
     for (let i = 0; i < ahtVals.length; i++) {
       if (i === gtIdx) continue;
-      const ht = toNum(ahtVals[i][0]);         // fraction of day
-      const h = toNum(inboundHandledVals[i][0]);
+      const ht = toNum(ahtVals[i][0]);           // fraction of day
+      const h = toNum(inboundHandledVals[i][0]); // handled count
       numerator += ht * h;
       denom += h;
     }
@@ -234,13 +251,14 @@ function main(workbook: ExcelScript.Workbook) {
   dash.getRange("A7:C7").setValues([["Media Type Name", "Inbound", "Inbound Handled"]]);
   dash.getRange("A7:C7").getFormat().getFont().setBold(true);
 
-  const mediaMap = new Map<string, { inbound: number; handled: number }>();
+  type MediaAgg = { inbound: number; handled: number };
+  const mediaMap = new Map<string, MediaAgg>();
 
   if (mediaVals) {
     for (let i = 0; i < mediaVals.length; i++) {
       if (i === gtIdx) continue;
 
-      const media = String(mediaVals[i][0] ?? "").trim();
+      const media = toStr(mediaVals[i][0]).trim();
       if (!media) continue;
 
       const inbound = inboundVals ? toNum(inboundVals[i][0]) : 0;
@@ -253,45 +271,38 @@ function main(workbook: ExcelScript.Workbook) {
     }
   }
 
-  const rows = Array.from(mediaMap.entries())
+  const rows: (string | number)[][] = Array.from(mediaMap.entries())
     .map(([k, v]) => [k, v.inbound, v.handled])
-    .sort((a, b) => (b[1] as number) - (a[1] as number));
+    .sort((a, b) => (Number(b[1]) - Number(a[1])));
 
   if (rows.length === 0) {
     dash.getRange("A8").setValue("No Media Type rows found (check column names).");
   } else {
-    // Write data starting at A8 (row index 7)
     dash.getRangeByIndexes(7, 0, rows.length, 3).setValues(rows);
     dash.getRangeByIndexes(7, 1, rows.length, 2).setNumberFormatLocal("0");
   }
 
   // ---------- Charts ----------
-  // Define chart ranges based on actual number of rows written
-  const dataRowCount = Math.max(rows.length, 1); // at least 1 row for chart range stability
+  const dataRowCount = Math.max(rows.length, 1);
 
-  // A7:C(7+dataRowCount) -> includes header row + data rows
-  const chartDataRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 3);
-  const pieRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 2);
+  // Includes header row + data rows
+  const chartDataRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 3); // A7:C...
+  const pieRange = dash.getRangeByIndexes(6, 0, dataRowCount + 1, 2);       // A7:B...
 
-  // Column chart: Inbound vs Handled
   const colChart = dash.addChart(ExcelScript.ChartType.columnClustered, chartDataRange);
   colChart.setPosition(dash.getRange("E7"), dash.getRange("L20"));
 
-  // Set chart title safely
   const ct = colChart.getTitle();
   ct.setVisible(true);
   ct.setText("Inbound vs Inbound Handled by Media Type");
-
   colChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.bottom);
 
-  // Pie chart: Inbound Share
   const pieChart = dash.addChart(ExcelScript.ChartType.pie, pieRange);
   pieChart.setPosition(dash.getRange("A22"), dash.getRange("D35"));
 
   const pt = pieChart.getTitle();
   pt.setVisible(true);
   pt.setText("Inbound Share by Media Type");
-
   pieChart.getLegend().setPosition(ExcelScript.ChartLegendPosition.right);
 
   // Final polish
